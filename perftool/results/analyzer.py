@@ -29,16 +29,21 @@ def _clean(o):
 def analyze_run(project: Project, run: RunInfo, force: bool = False) -> dict:
     run_dir = Path(run.script_file).parent
     cache = run_dir / "analysis.json"
-    if cache.exists() and not force and cache.stat().st_mtime >= Path(run.raw_file).stat().st_mtime:
-        cached = json.loads(cache.read_text(encoding="utf-8"))
-        if cached.get("version") == ANALYSIS_VERSION:
-            return cached
-
-    df, vus = load_results(run.tool, run.raw_file)
     cfg = run.config or project.test_config.model_dump()
     p95_default = float(cfg.get("p95_threshold_ms", 3000))
     err_thr = float(cfg.get("error_rate_threshold", 0.01))
     thr_map = {sc.uc_code: (sc.p95_threshold_ms or p95_default) for sc in project.scenarios}
+    # ngưỡng p95 riêng của UC có thể đổi ở bước 5 SAU khi chạy -> là một phần khoá cache (đổi ngưỡng = tính lại)
+    thr_key = json.dumps({"p95": p95_default, "err": err_thr, "uc": thr_map}, sort_keys=True, ensure_ascii=False)
+    if cache.exists() and not force and cache.stat().st_mtime >= Path(run.raw_file).stat().st_mtime:
+        try:
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+        except ValueError:
+            cached = {}
+        if cached.get("version") == ANALYSIS_VERSION and cached.get("thr_key") == thr_key:
+            return cached
+
+    df, vus = load_results(run.tool, run.raw_file)
     uc_override = {sc.uc_code for sc in project.scenarios if sc.p95_threshold_ms}
     # nguồn ngưỡng: "uc" = đặt riêng cho UC (Bước 5), "default" = giá trị mặc định của công cụ, "global" = ngưỡng chung đã chỉnh (Bước 7)
     global_src = "default" if p95_default == TestConfig().p95_threshold_ms else "global"
@@ -76,7 +81,7 @@ def analyze_run(project: Project, run: RunInfo, force: bool = False) -> dict:
     ts_all = timeseries(df[~df["is_login"]], vus)
     ts_all.to_csv(run_dir / "ts_ALL.csv", index=False)
     result = {
-        "version": ANALYSIS_VERSION, "run_id": run.run_id, "tool": run.tool, "scenario_type": run.scenario_type, "config": cfg,
+        "version": ANALYSIS_VERSION, "thr_key": thr_key, "run_id": run.run_id, "tool": run.tool, "scenario_type": run.scenario_type, "config": cfg,
         "started_at": run.started_at, "finished_at": run.finished_at, "raw_file": run.raw_file,
         "overall": overall, "overall_eval": evaluate(overall, p95_default, err_thr), "ucs": ucs,
         "login": summarize(df[df["is_login"]]) if df["is_login"].any() else None,

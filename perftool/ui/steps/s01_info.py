@@ -46,6 +46,12 @@ def render(p: Project) -> None:
                                    placeholder="VD: /dashboard")
             manual = st.checkbox("Tôi sẽ tự đăng nhập trên trình duyệt (khi có OTP/CAPTCHA/SSO)", p.login.manual_login)
             headless = st.checkbox("Chạy trình duyệt ẩn (headless)", p.login.headless)
+            insecure = st.checkbox("Bỏ qua kiểm tra chứng chỉ HTTPS (chỉ máy chủ kiểm thử dùng chứng chỉ tự ký)",
+                                   p.login.skip_tls_verify,
+                                   help="Khi bật, crawler, nút Kiểm tra đăng nhập và script k6 chấp nhận mọi chứng chỉ – "
+                                        "mật khẩu có thể bị gửi tới máy chủ giả mạo. Chỉ bật trong mạng nội bộ tin cậy.")
+            if insecure:
+                st.warning("Đang tắt kiểm tra chứng chỉ HTTPS: mật khẩu kiểm thử có thể bị gửi tới máy chủ giả mạo.")
 
         submitted = st.form_submit_button("💾 Lưu thông tin", type="primary")
 
@@ -68,7 +74,7 @@ def render(p: Project) -> None:
             p.login.username = user.strip()
             p.login.username_selector, p.login.password_selector = us.strip(), ps.strip()
             p.login.submit_selector, p.login.success_url_contains = ss.strip(), ok_url.strip()
-            p.login.manual_login, p.login.headless = manual, headless
+            p.login.manual_login, p.login.headless, p.login.skip_tls_verify = manual, headless, insecure
             state.set_password(p, pwd)
             if remember and pwd:
                 if not save_password(p.id, p.login.username, pwd):
@@ -156,7 +162,7 @@ def accounts_section(p: Project) -> None:
         res = {}
         bar = st.progress(0.0, text="Đang kiểm tra...")
         for i, (u, pw) in enumerate(pool, 1):
-            res[u] = acc.check_login(p.auth, u, pw) if pw else {"ok": False, "ms": None, "message": "Chưa có mật khẩu"}
+            res[u] = acc.check_login(p.auth, u, pw, insecure=p.login.skip_tls_verify) if pw else {"ok": False, "ms": None, "message": "Chưa có mật khẩu"}
             bar.progress(i / len(pool), text=f"Đang kiểm tra {i}/{len(pool)}: {u}")
             time.sleep(0.3)          # giãn cách để không tự gây giới hạn tần suất
         st.session_state[f"acccheck_{p.id}"] = res

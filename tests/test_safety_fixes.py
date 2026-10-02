@@ -33,7 +33,8 @@ def test_query_posts_stay_enabled():
     for u in [f"{api}/Task/GetAll", f"{api}/Task/GetForEdit", "https://x.vn/api/tasks/search",
               f"{api}/DRViewer/PostData", f"{api}/Report/ExecuteStoreWithParam", "https://x.vn/notify/negotiate"]:
         assert is_query_request("POST", u), u
-    assert is_query_request("GET", "https://x.vn/api/tasks/delete?id=1")
+    assert is_query_request("GET", "https://x.vn/api/tasks/list?id=1")
+    assert not is_query_request("GET", "https://x.vn/api/tasks/delete?id=1")   # GET ghi dữ liệu -> tắt mặc định
 
 
 def test_build_scenario_disables_write_posts():

@@ -18,8 +18,9 @@ from playwright.sync_api import TimeoutError as PWTimeout
 
 from .. import config
 from ..models import AuthCapture, CapturedRequest, LoginConfig, PageInfo
-from .guard import WriteGuard, _compact, has_write_keyword
+from .guard import WriteGuard, _compact, get_has_write, has_write_keyword, page_has_write
 from .interactions import host_key, is_banned, page_key
+from .login_capture import body_has_secret, has_secret_field, login_template, redact_body
 
 Log = Callable[[str], None]
 
@@ -174,6 +175,7 @@ class RequestRecorder:
         self.blocked: set[tuple[str, str]] = set()     # (method, url) bị bộ chặn ghi huỷ – gán từ WriteGuard.blocked
         self.static_ext = tuple(config.get("crawler.static_extensions", []))
         self.types = set(config.get("crawler.capture_resource_types", ["xhr", "fetch", "document"]))
+        self.secrets: list[str] = []      # mật khẩu đã biết -> che trong body trước khi lưu (vd đăng nhập lại khi ghi 3c)
         page.on("requestfinished", lambda r: self.items.append((r, True)))
         page.on("requestfailed", lambda r: self.items.append((r, False)))
 
@@ -233,13 +235,14 @@ class RequestRecorder:
                     post = req.post_data
                 except Exception:  # noqa: BLE001 - dữ liệu nhị phân
                     post = None
+                post, secret_hit = redact_body(post, self.secrets)
                 out.append(CapturedRequest(
                     method=req.method, url=req.url, resource_type=req.resource_type, status=status,
                     duration_ms=round(dur, 1) if dur and dur > 0 else None, content_type=ctype,
                     post_data=(post[:4000] if post else None), response_size=size, page_url=page_url,
                     auth_sig=auth_sig, token_path=token_path, token_sig=token_sig,
                     headers=custom_h if req.resource_type in ("xhr", "fetch") else {},
-                    blocked=(not ok) and (req.method, req.url) in self.blocked))
+                    blocked=(not ok) and (req.method, req.url) in self.blocked, sensitive=secret_hit))
             except Exception:  # noqa: BLE001
                 continue
         return out
@@ -292,7 +295,7 @@ class WebCrawler:
                 self._pw.stop()
 
     def _new_context(self, use_state: bool) -> None:
-        kwargs: dict[str, Any] = {"ignore_https_errors": True}
+        kwargs: dict[str, Any] = {"ignore_https_errors": config.insecure_tls(self.cfg)}
         vp = str(config.get("crawler.window_size", "maximized")).lower().replace(" ", "")
         if vp == "maximized" and not self.headless:
             kwargs["no_viewport"] = True     # trang co giãn theo cửa sổ trình duyệt (đã mở toàn màn hình)
@@ -306,6 +309,7 @@ class WebCrawler:
         self.context.set_default_timeout(self.timeout)
         self.page = self.context.new_page()
         self.recorder = RequestRecorder(self.page)
+        self.recorder.secrets = [x for x in (self.password,) if x]
         self.page.on("request", self._sniff_auth_header)
 
     def enable_write_guard(self, level: str = "keyword") -> WriteGuard:
@@ -368,7 +372,11 @@ class WebCrawler:
         u, t = _compact(url), _compact(text)
         if any(k in u or k in t for k in self.exclude):
             return True
-        return content and (has_write_keyword(url) or bool(text and is_banned(text, self.blacklist)))
+        if content:
+            return has_write_keyword(url) or get_has_write(url) or bool(text and is_banned(text, self.blacklist))
+        # link menu: trang danh sách "/HoSo/XuLy", "/viec-can-xu-ly" vẫn mở; link mà mở ra là đã ghi dữ liệu
+        # (/inbox/read-all, /ho-so/xu-ly?id=1, /VanBan/XoaVanBan?id=5) thì không
+        return page_has_write(url)
 
     # ------------------------------------------------------------ login
     def login(self, reuse_state: bool = True) -> bool:
@@ -389,7 +397,13 @@ class WebCrawler:
         self._new_context(use_state=False)
         url = self.cfg.login_url or self.cfg.base_url
         self.log(f"Mở trang đăng nhập: {url}")
-        self.page.goto(url, wait_until="domcontentloaded")
+        try:
+            self.page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:  # noqa: BLE001
+            if "CERT" in str(e).upper() or "SSL" in str(e).upper():
+                self.log("Chứng chỉ HTTPS của máy chủ không hợp lệ (tự ký / hết hạn / sai tên miền). Nếu đây là máy chủ "
+                         "kiểm thử nội bộ, tick 'Bỏ qua kiểm tra chứng chỉ HTTPS' ở bước 1 › Tuỳ chọn nâng cao.")
+            raise
         self._settle()
         self.recorder.reset()
         self.page.route("**/*", self._login_route)
@@ -419,6 +433,8 @@ class WebCrawler:
         self._capture_login_request()
         if ok:
             self.context.storage_state(path=str(self.state_file))
+            from ..storage import private_file
+            private_file(self.state_file)
             self.state_meta.write_text(json.dumps(self._state_id(), ensure_ascii=False), encoding="utf-8")
             self._hosts.add(host_key(self.page.url))
             self.auth.cookies = self.context.cookies()
@@ -495,7 +511,10 @@ class WebCrawler:
             return False
 
     def _capture_login_request(self) -> None:
-        """Tìm request đăng nhập (POST chứa mật khẩu) để sinh bước login trong script."""
+        """Tìm request đăng nhập (POST chứa mật khẩu) để sinh bước login trong script.
+
+        Chỉ lưu mẫu body khi đã gỡ được mật khẩu thật (xem login_capture) – kể cả khi người dùng tự đăng nhập mà
+        không nhập mật khẩu ở bước 1, mật khẩu/OTP gõ trên trình duyệt không bao giờ bị lưu xuống đĩa."""
         user, pwd = self.cfg.username, self.password
         cands = self._login_reqs + [r for r, _ in self.recorder.items if r not in self._login_reqs]
         for req in cands:
@@ -503,17 +522,25 @@ class WebCrawler:
                 if req.method not in ("POST", "PUT"):
                     continue
                 body = req.post_data or ""
+                ctype = req.headers.get("content-type", "")
             except Exception:  # noqa: BLE001
                 continue
-            if not body or (pwd and pwd not in body and _url_quote(pwd) not in body):
+            if not body:
                 continue
-            tpl = body
-            for raw, ph in ((pwd, "{{PASSWORD}}"), (user, "{{USERNAME}}")):
-                if raw:
-                    tpl = tpl.replace(raw, ph).replace(_url_quote(raw), ph)
+            if pwd and not body_has_secret(body, pwd):
+                continue
+            if not pwd and not has_secret_field(body, ctype):
+                continue
+            tpl, notes = login_template(body, ctype, user, pwd)
+            if tpl is None:
+                self.log(f"Thấy request đăng nhập {req.method} {req.url} nhưng không tạo được mẫu body an toàn "
+                         f"({'; '.join(notes)}) – script sẽ dùng cookie/header tĩnh.")
+                return
+            for n in notes:
+                self.log(f"Lưu ý: {n}.")
             self.auth.login_method = req.method
             self.auth.login_url = req.url
-            self.auth.login_content_type = req.headers.get("content-type", "")
+            self.auth.login_content_type = ctype
             self.auth.login_body_template = tpl
             try:
                 text = self._login_bodies.get(req.url)
@@ -531,7 +558,18 @@ class WebCrawler:
         self.log("Không bắt được request đăng nhập dạng API; script sẽ dùng cookie/header tĩnh.")
 
     def _save_auth_cache(self) -> None:
-        (self.work_dir / "auth.json").write_text(self.auth.model_dump_json(indent=2), encoding="utf-8")
+        from ..storage import private_file
+        f = self.work_dir / "auth.json"
+        f.write_text(self.auth.model_dump_json(indent=2), encoding="utf-8")
+        private_file(f)
+
+    def save_session(self) -> None:
+        """Ghi lại auth.json khi kết thúc (header Authorization có thể bắt được giữa lúc quét); bỏ qua nếu chưa đăng nhập."""
+        if self.auth.login_url or self.auth.cookies or self.auth.static_headers:
+            try:
+                self._save_auth_cache()
+            except OSError:
+                pass
 
     def _load_auth_cache(self) -> None:
         f = self.work_dir / "auth.json"

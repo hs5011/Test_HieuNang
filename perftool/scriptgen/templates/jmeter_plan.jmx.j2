@@ -59,26 +59,21 @@
             <stringProp name="Header.name">{{ k|jx }}</stringProp>
             <stringProp name="Header.value">{{ v|jx }}</stringProp>
           </elementProp>{% endfor %}{% endif %}
-{%- if auth_mode == 'login_per_vu' and login.token_path %}
-          <elementProp name="" elementType="Header">
-            <stringProp name="Header.name">{{ login.token_header|jx }}</stringProp>
-            <stringProp name="Header.value">{{ login.token_prefix|jxf }}${AUTH_TOKEN}</stringProp>
-          </elementProp>{% endif %}
         </collectionProp>
       </HeaderManager>
       <hashTree/>
-{%- for sc in scenarios %}
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="{{ sc.uc_code|jx }} - {{ sc.uc_name|jx }}">
+{%- for sc in scenarios %}{% for tg in sc.groups %}
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="{{ sc.uc_code|jx }} - {{ sc.uc_name|jx }}{% if sc.groups|length > 1 %} [bậc {{ loop.index }}: +{{ tg.threads }} VU sau {{ tg.delay_s }}s]{% endif %}">
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
           <boolProp name="LoopController.continue_forever">false</boolProp>
           <intProp name="LoopController.loops">-1</intProp>
         </elementProp>
-        <stringProp name="ThreadGroup.num_threads">{{ sc.vus }}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">{{ sc.ramp_s }}</stringProp>
+        <stringProp name="ThreadGroup.num_threads">{{ tg.threads }}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">{{ tg.ramp_s }}</stringProp>
         <boolProp name="ThreadGroup.scheduler">true</boolProp>
-        <stringProp name="ThreadGroup.duration">{{ sc.duration_s }}</stringProp>
-        <stringProp name="ThreadGroup.delay">0</stringProp>
+        <stringProp name="ThreadGroup.duration">{{ tg.duration_s }}</stringProp>
+        <stringProp name="ThreadGroup.delay">{{ tg.delay_s }}</stringProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
       </ThreadGroup>
       <hashTree>
@@ -161,6 +156,18 @@ if (cols.size() &gt;= 2) { vars.put("USERNAME", cols[0]); vars.put("PASSWORD", c
           <boolProp name="TransactionController.parent">false</boolProp>
         </TransactionController>
         <hashTree>
+{%- if auth_mode == 'login_per_vu' and login.token_path %}
+          <!-- token đăng nhập chỉ gắn cho các bước nghiệp vụ (không gắn lên chính request LOGIN) -->
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Token đăng nhập">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">{{ login.token_header|jx }}</stringProp>
+                <stringProp name="Header.value">{{ login.token_prefix|jxf }}${AUTH_TOKEN}</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+{%- endif %}
 {%- for st in sc.steps %}
           <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="{{ sc.uc_code|jx }} :: {{ st.name|jx }}">
 {%- if st.body %}
@@ -227,6 +234,18 @@ if (cols.size() &gt;= 2) { vars.put("USERNAME", cols[0]); vars.put("PASSWORD", c
               <intProp name="Assertion.test_type">1</intProp>
             </ResponseAssertion>
             <hashTree/>
+{%- if st.login_guard %}
+            <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Không bị chuyển về trang đăng nhập (mất phiên)">
+              <collectionProp name="Asserion.test_strings">
+                <stringProp name="0">{{ login_page_re|x }}</stringProp>
+              </collectionProp>
+              <stringProp name="Assertion.test_field">Assertion.sample_label</stringProp>
+              <boolProp name="Assertion.assume_success">false</boolProp>
+              <intProp name="Assertion.test_type">6</intProp>
+              <stringProp name="Assertion.custom_message">SESSION_LOST: bị chuyển về trang đăng nhập</stringProp>
+            </ResponseAssertion>
+            <hashTree/>
+{%- endif %}
           </hashTree>
 {%- if st.think_ms > 0 %}
           <TestAction guiclass="TestActionGui" testclass="TestAction" testname="Think time {{ st.think_ms }}ms">
@@ -245,7 +264,7 @@ if (cols.size() &gt;= 2) { vars.put("USERNAME", cols[0]); vars.put("PASSWORD", c
         </TestAction>
         <hashTree/>
       </hashTree>
-{%- endfor %}
+{%- endfor %}{% endfor %}
     </hashTree>
   </hashTree>
 </jmeterTestPlan>

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from rapidfuzz import fuzz
 
 from .. import config
-from ..crawler.guard import is_query_request
+from ..crawler.guard import is_query_request, page_has_write
 from ..crawler.interactions import screen_key
 from ..models import CapturedRequest, PageInfo, Project, ScenarioStep, TestScenario, UCScore, UseCase
 from ..uc_import.importer import estimate_steps, norm
@@ -478,8 +478,9 @@ def build_scenario(project: Project, score: UCScore) -> TestScenario:
     think = project.test_config.think_time_s
     for p in pages:
         if p.url not in seen:
+            # trang mà mở ra là ghi dữ liệu (/inbox/read-all, /ho-so/xu-ly?id=1) -> tắt mặc định
             steps.append(ScenarioStep(name=f"Mở màn hình {p.menu_text or p.title or ''}".strip()[:80],
-                                      method="GET", url=p.url, think_time_s=0))
+                                      method="GET", url=p.url, think_time_s=0, enabled=not page_has_write(p.url)))
             seen.add(p.url)
         for r in relevant_requests([p], project.login.base_url, common):
             if r.resource_type not in ("xhr", "fetch"):
@@ -489,11 +490,11 @@ def build_scenario(project: Project, score: UCScore) -> TestScenario:
                 continue
             seen.add(key)
             path = urlparse(r.url).path.rstrip("/").split("/")[-1] or urlparse(r.url).path
-            # POST dạng truy vấn (search/list) vẫn an toàn -> bật; ghi dữ liệu thực sự, hoặc request đã bị bộ chặn ghi
-            # huỷ khi quét (blocked) -> tắt mặc định
+            # chỉ request CHẮC CHẮN là đọc mới bật (whitelist): GET danh sách/chi tiết, POST mang tên truy vấn. Ghi dữ
+            # liệu, chưa rõ nghĩa (GET /api/notify/ack?id=1), chứa dữ liệu nhạy cảm, hoặc đã bị bộ chặn ghi huỷ -> tắt
             steps.append(ScenarioStep(name=f"API {r.method} {path}"[:80], method=r.method, url=r.url,
                                       body=r.post_data or "", content_type=_ctype_from(r),
-                                      enabled=is_query_request(r.method, r.url) and not r.blocked,
+                                      enabled=is_query_request(r.method, r.url) and not r.blocked and not r.sensitive,
                                       headers=dict(r.headers)))
         if steps:
             steps[-1].think_time_s = think

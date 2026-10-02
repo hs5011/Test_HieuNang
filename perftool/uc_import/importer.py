@@ -60,6 +60,8 @@ def read_table(source: Union[str, Path, IO], filename: str = "", sheet: Union[st
         raw = _read_csv_ragged(source)
     else:
         raw = pd.read_excel(source, header=None, dtype=str, sheet_name=sheet)
+    if raw.empty or raw.dropna(how="all").empty:
+        raise ValueError("File/sheet không có dữ liệu – chọn đúng sheet chứa danh sách UC.")
 
     all_alias = {a for v in COLUMN_ALIASES.values() for a in v}
     best_row, best_hits = 0, -1
@@ -176,7 +178,8 @@ def to_use_cases(df: pd.DataFrame, mapping: dict[str, str], ffill_module: bool =
             return "" if pd.isna(v) else unicodedata.normalize("NFC", str(v)).strip()   # NFC: chữ Việt tổ hợp -> dựng sẵn
 
         name = val("name")
-        cells = [str(v).strip() for v in row.tolist() if not pd.isna(v) and str(v).strip()]
+        # xét dòng nhóm trên dữ liệu GỐC (trước ffill phân hệ – ffill làm dòng "2. Phân hệ…" có thêm ô)
+        cells = [str(v).strip() for v in df.loc[i].tolist() if not pd.isna(v) and str(v).strip()]
         if not name:
             # dòng nhóm phân cấp: chỉ có 1 ô chữ dạng "A. ...", "I. ...", "1. ..."
             if len(cells) == 1 and _GROUP_RE.match(cells[0]):
@@ -193,6 +196,7 @@ def to_use_cases(df: pd.DataFrame, mapping: dict[str, str], ffill_module: bool =
         code = val("code") or f"UC-{len(ucs) + 1:03d}"
         if re.fullmatch(r"\d+", code):
             code = f"UC-{int(code):03d}"
+        code = unique_code(code, {u.code for u in ucs})
         desc = val("description")
         steps = _to_int(val("steps")) if val("steps") else estimate_steps(desc)
         extra = {c: ("" if pd.isna(row[c]) else str(row[c])) for c in work.columns if c not in mapped_cols}
@@ -214,6 +218,17 @@ def to_use_cases(df: pd.DataFrame, mapping: dict[str, str], ffill_module: bool =
     return ucs
 
 
+def unique_code(code: str, used: set[str]) -> str:
+    """Mã UC trùng (trong file hoặc trùng mã tự sinh UC-00n) -> thêm hậu tố " (2)", " (3)"…: mã UC là khoá của điểm,
+    kịch bản, ngưỡng và kết quả – trùng mã làm UC sau đè UC trước."""
+    if code not in used:
+        return code
+    k = 2
+    while f"{code} ({k})" in used:
+        k += 1
+    return f"{code} ({k})"
+
+
 def use_cases_to_df(ucs: list[UseCase]) -> pd.DataFrame:
     return pd.DataFrame([{
         "Mã UC": u.code, "Tên UC": u.name, "Phân hệ": u.module, "Tác nhân": u.actor, "Số bước": u.steps,
@@ -229,7 +244,11 @@ def df_to_use_cases(df: pd.DataFrame, old: list[UseCase]) -> list[UseCase]:
         name = str(r.get("Tên UC") or "").strip()
         if not name or name == "nan":
             continue
-        code = str(r.get("Mã UC") or "").strip() or f"UC-{len(out) + 1:03d}"
+        name = unicodedata.normalize("NFC", name)
+        code = unicodedata.normalize("NFC", str(r.get("Mã UC") or "").strip())
+        if not code or code == "nan":
+            code = f"UC-{len(out) + 1:03d}"
+        code = unique_code(code, {u.code for u in out})
         steps = _to_int(r.get("Số bước")) if pd.notna(r.get("Số bước")) else None
 
         def s(k: str) -> str:

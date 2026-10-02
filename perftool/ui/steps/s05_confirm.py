@@ -4,12 +4,14 @@ from __future__ import annotations
 from datetime import datetime
 
 import json
+import math
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
 from ...analysis.complexity import build_scenario
-from ...crawler.guard import is_query_request
+from ...crawler.guard import classify, is_query_request, page_has_write
 from ...models import Project, ScenarioStep, TestScenario
 from .. import state
 from ..components import check_all_buttons
@@ -26,6 +28,20 @@ def _steps_df(sc: TestScenario) -> pd.DataFrame:
                           "Think time (s)": s.think_time_s, "Trích token": s.extract_token,
                           "Biến token": s.token_var, "Dùng token": s.use_token}
                          for s in sc.steps], columns=cols)
+
+
+def _num(v) -> float:
+    """Ô số bị xoá trống trên bảng -> NaN/None; NaN làm hỏng script và project.json -> 0."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) and f >= 0 else 0.0
+
+
+def _flag(v) -> bool:
+    """Ô checkbox của dòng mới thêm là None/NaN (bool(NaN) = True) -> coi là tắt."""
+    return bool(v) and not (isinstance(v, float) and math.isnan(v))
 
 
 def _df_steps(df: pd.DataFrame) -> list[ScenarioStep]:
@@ -45,7 +61,7 @@ def _df_steps(df: pd.DataFrame) -> list[ScenarioStep]:
             headers = {}
         out.append(ScenarioStep(name=s("Tên bước") or url[-60:], method=(s("Method") or "GET").upper(), url=url,
                                 content_type=s("Content-Type"), body=s("Body"), headers=headers,
-                                think_time_s=float(r.get("Think time (s)") or 0), enabled=bool(r.get("Bật")),
+                                think_time_s=_num(r.get("Think time (s)")), enabled=_flag(r.get("Bật")),
                                 extract_token=s("Trích token"), token_var=s("Biến token"), use_token=s("Dùng token")))
     return out
 
@@ -85,8 +101,8 @@ def render(p: Project) -> None:
                     st.write(uc.description)
             c1, c2 = st.columns([1, 3])
             thr = c1.number_input("Ngưỡng p95 riêng (ms, 0 = dùng mặc định)", 0, 600000,
-                                  int(sc.p95_threshold_ms or 0), 100, key=f"thr_{p.id}_{sc.uc_code}")
-            val = check_all_buttons(f"step_chk_{p.id}_{sc.uc_code}", len(sc.steps), "☑ Bật tất cả", "☐ Tắt tất cả",
+                                  int(sc.p95_threshold_ms or 0), 100, key=f"thr_{p.id}_{i}_{sc.uc_code}")
+            val = check_all_buttons(f"step_chk_{p.id}_{i}_{sc.uc_code}", len(sc.steps), "☑ Bật tất cả", "☐ Tắt tất cả",
                                     help="Bật/tắt mọi request của UC này (lưu ngay). Lưu ý: Bật tất cả sẽ bật cả request "
                                          "ghi dữ liệu POST/PUT/DELETE.")
             if val is not None:
@@ -94,13 +110,21 @@ def render(p: Project) -> None:
                     s_.enabled = val
                 p.confirmed = False
                 state.save(p)
-                st.session_state.pop(f"steps_{p.id}_{sc.uc_code}", None)
+                st.session_state.pop(f"steps_{p.id}_{i}_{sc.uc_code}", None)
                 st.rerun()
-            writes = [s_.name for s_ in sc.steps if s_.enabled and not s_.extract_token and not is_query_request(s_.method, s_.url)]
+            writes = [s_.name for s_ in sc.steps if s_.enabled and not s_.extract_token
+                      and not (is_query_request(s_.method, s_.url) and not page_has_write(s_.url))]
+            review = [s_ for s_ in sc.steps if not s_.enabled and classify(s_.method, s_.url) == "unknown"]
+            if review:
+                st.info(f"🔎 {len(review)} request **chưa rõ là đọc hay ghi** nên đang TẮT (GET trỏ tới 1 bản ghi mà tên không "
+                        "phải truy vấn – có thể là 'đánh dấu đã xem', 'ghim'…). Kiểm tra rồi bật nếu chắc chắn chỉ đọc: "
+                        + ", ".join(f"`{s_.method} {urlparse(s_.url).path}`" for s_ in review[:8])
+                        + (" …" if len(review) > 8 else ""))
             if writes:
-                st.warning(f"Đang bật {len(writes)} request ghi dữ liệu (POST/PUT/PATCH/DELETE) – chạy test sẽ tạo/sửa/xoá "
-                           "dữ liệu thật trên hệ thống. Tắt các dòng này nếu không muốn.")
-            ed = st.data_editor(_steps_df(sc), num_rows="dynamic", width="stretch", key=f"steps_{p.id}_{sc.uc_code}",
+                st.warning(f"Đang bật {len(writes)} request có thể ghi dữ liệu (POST/PUT/PATCH/DELETE, hoặc GET có từ ghi "
+                           "trong URL như markread, delete, xu-ly…) – chạy test sẽ lặp lại chúng trên hệ thống thật: "
+                           + ", ".join(writes[:8]) + (" …" if len(writes) > 8 else "") + ". Tắt các dòng này nếu không muốn.")
+            ed = st.data_editor(_steps_df(sc), num_rows="dynamic", width="stretch", key=f"steps_{p.id}_{i}_{sc.uc_code}",
                                 column_config={
                                     "Method": st.column_config.SelectboxColumn(options=METHODS),
                                     "Content-Type": st.column_config.SelectboxColumn(
@@ -110,13 +134,13 @@ def render(p: Project) -> None:
                                     "URL": st.column_config.TextColumn(width="large"),
                                     "Think time (s)": st.column_config.NumberColumn(min_value=0.0, step=0.5)})
             b1, b2, _ = st.columns([1, 1, 3])
-            if b1.button("💾 Lưu kịch bản", key=f"save_{p.id}_{sc.uc_code}"):
+            if b1.button("💾 Lưu kịch bản", key=f"save_{p.id}_{i}_{sc.uc_code}"):
                 sc.steps = _df_steps(ed)
                 sc.p95_threshold_ms = float(thr) or None
                 p.confirmed = False
                 state.save(p)
                 st.rerun()
-            if b2.button("↺ Tạo lại từ dữ liệu crawl", key=f"regen_{p.id}_{sc.uc_code}") and score:
+            if b2.button("↺ Tạo lại từ dữ liệu crawl", key=f"regen_{p.id}_{i}_{sc.uc_code}") and score:
                 new = build_scenario(p, score)
                 sc.steps = new.steps
                 p.confirmed = False

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,10 +35,15 @@ def plan_runs(project: Project) -> list[RunInfo]:
         groups = [(sc.uc_code, [sc]) for sc in project.scenarios]
     runs: list[RunInfo] = []
     for tool in cfg.tools:
+        used: set[str] = set()
         for code, scs in groups:
             if not any(s.enabled for sc in scs for s in sc.steps):
                 continue
-            safe = code.replace("/", "_").replace("\\", "_")
+            safe = _dir_safe(code)
+            base, k = safe, 2
+            while safe.lower() in used:          # "UC:1" và "UC*1" cùng thành "UC_1" -> thêm hậu tố
+                safe, k = f"{base}_{k}", k + 1
+            used.add(safe.lower())
             run_id = f"{stamp}_{tool}_{cfg.scenario_type}_{safe}"
             d = sub_dir(project.id, f"runs/{run_id}")
             if tool == "k6":
@@ -50,6 +56,16 @@ def plan_runs(project: Project) -> list[RunInfo]:
                                 script_file=str(script), raw_file=str(raw), summary_file=str(summary),
                                 log_file=str(d / "tool.log"), config=cfg.model_dump()))
     return runs
+
+
+_WIN_BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _dir_safe(code: str) -> str:
+    """Mã UC -> tên thư mục hợp lệ trên Windows (bỏ < > : " / \\ | ? *, ký tự điều khiển, dấu chấm/cách ở cuối).
+    Mã UC gốc vẫn giữ nguyên trong run.json (uc_code)."""
+    s = _WIN_BAD.sub("_", code or "").strip(" .")
+    return s[:60].rstrip(" .") or "UC"
 
 
 def build_command(run: RunInfo, secrets_file: Optional[Path]) -> list[str]:
@@ -65,6 +81,9 @@ def build_command(run: RunInfo, secrets_file: Optional[Path]) -> list[str]:
     cmd = [exe, "-n", "-t", run.script_file, "-l", run.raw_file, "-j", str(Path(run.log_file).with_name("jmeter.log")),
            "-Jjmeter.save.saveservice.output_format=csv", "-Jjmeter.save.saveservice.thread_counts=true",
            "-Jjmeter.save.saveservice.latency=true", "-Jjmeter.save.saveservice.url=true",
+           # không ghi các bước chuyển hướng con ("Mở màn hình-0", "-1"): thời gian của chúng đã nằm trong mẫu chính,
+           # ghi thêm sẽ bị đếm trùng vào số request / thông lượng / p95
+           "-Jjmeter.save.saveservice.subresults=false",
            "-Jsummariser.interval=10", "-e", "-o", run.summary_file]
     if secrets_file:
         cmd += ["-q", str(secrets_file)]
@@ -97,9 +116,9 @@ def clear_previous_outputs(run: RunInfo) -> list[Path]:
 
 
 def has_fresh_data(run: RunInfo) -> bool:
-    """File dữ liệu thô tồn tại, không rỗng và được ghi sau thời điểm bắt đầu lượt chạy."""
+    """File dữ liệu thô tồn tại, có ít nhất 1 dòng dữ liệu ngoài dòng tiêu đề và được ghi sau thời điểm bắt đầu lượt."""
     p = Path(run.raw_file)
-    if not p.exists() or p.stat().st_size == 0:
+    if not p.exists() or p.stat().st_size == 0 or not _has_data_row(p):
         return False
     if not run.started_at:
         return True
@@ -111,6 +130,16 @@ def has_fresh_data(run: RunInfo) -> bool:
     return p.stat().st_mtime >= started
 
 
+def _has_data_row(p: Path) -> bool:
+    """Công cụ crash ngay sau khi mở file chỉ kịp ghi dòng tiêu đề CSV -> không tính là có dữ liệu."""
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            return any(line.strip() for line in fh)
+    except OSError:
+        return False
+
+
 def execute(run: RunInfo, accounts: list[tuple[str, str]], log: Log,
             on_start: Callable[[int], None] = lambda p: None) -> int:
     """Chạy 1 lượt test. accounts: danh sách (tài khoản, mật khẩu); phần tử đầu là tài khoản chính/dự phòng."""
@@ -118,7 +147,8 @@ def execute(run: RunInfo, accounts: list[tuple[str, str]], log: Log,
     for p in clear_previous_outputs(run):
         log(f"Đã xoá kết quả cũ: {p.name}")
     username, password = accounts[0] if accounts else ("", "")
-    env = os.environ.copy()
+    # không chuyển mật khẩu của cả nhóm tài khoản / máy chủ (PERFTOOL_ACCOUNTS, PERFTOOL_MONITOR_SECRETS…) sang k6/JMeter
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PERFTOOL_")}
     env["PERF_USERNAME"] = username
     env["PERF_PASSWORD"] = password
     secrets: Optional[Path] = None

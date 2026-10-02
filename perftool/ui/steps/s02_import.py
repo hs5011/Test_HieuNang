@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 import pandas as pd
 import streamlit as st
@@ -66,6 +67,10 @@ def render(p: Project) -> None:
         sec(f"Danh sách UC hiện tại ({len(p.use_cases)}) – có thể chỉnh sửa trực tiếp")
         if p.uc_source_file:
             st.caption(f"Nguồn: {p.uc_source_file}")
+        dup = [u.code for u in p.use_cases if re.search(r" \(\d+\)$", u.code)]
+        if dup:
+            st.error(f"Có {len(dup)} mã UC bị trùng, đã tự đổi thành: {', '.join(dup[:10])}"
+                     + (" …" if len(dup) > 10 else "") + ". Nên sửa lại mã cho đúng trong bảng dưới rồi bấm Lưu.")
         df = importer.use_cases_to_df(p.use_cases)
         edited = st.data_editor(df, num_rows="dynamic", width="stretch", height=420, key=f"uc_editor_{p.id}",
                                 column_config={"Số bước": st.column_config.NumberColumn(min_value=0, step=1),

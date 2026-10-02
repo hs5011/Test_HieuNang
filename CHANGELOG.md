@@ -1,5 +1,66 @@
 # Nhật ký thay đổi – PerfTool
 
+## 2026-10-02 (đợt 2) – Sửa lỗi theo báo cáo review 2026-10-02
+
+- **Bật sẵn theo whitelist (bước 5):** request chia 3 loại *đọc / ghi / chưa rõ*; chỉ request chắc chắn là đọc được bật.
+  GET trỏ tới 1 bản ghi (`?id=…`) mà tên không phải truy vấn (`/api/notify/ack?id=1`, `/api/tasks/pin?id=1`) là *chưa rõ*
+  → tắt, liệt kê ở 5a để người dùng xem lại. Bước "Mở màn hình" của trang mà mở ra là ghi (`/inbox/read-all`,
+  `/ho-so/xu-ly?id=1`) cũng tắt; trang danh sách `/viec-can-xu-ly`, `/HoSo/XuLy`, trang form `/VanBan/ThemMoi` vẫn bật.
+  `GET …/TokenAuth/LogOut` không còn được bật (load test tự đăng xuất). Đối chiếu dữ liệu quét thật của 3 dự án: không API
+  đọc nào bị tắt nhầm.
+- **Bộ chặn ghi khi quét:** thêm động từ `ack, pin, touch, open, visit, follow, like, vote, star, mark, close, hide…`;
+  tải trang mặc định mức *strict* (`crawler.page_load_guard`) nên POST ghi nhận lượt xem lúc tải trang bị huỷ; link menu
+  có tác dụng phụ không được mở; menu ⋮ không bấm Ghim / Theo dõi / Đóng việc / Like. Server bẫy: 7 → 0 request ghi lọt.
+- **Không còn chặn nhầm** GET đọc có từ ghi trong cụm danh từ: `extend-info`, `change-log`, `send-history`,
+  `gia-han/danh-sach`, `loai-xu-ly`, cờ lọc `isCreate=false`, giá trị lọc `TinhTrangGiaHan=DangGiaHan`, `?d=<epoch>`.
+- **Mật khẩu/OTP không bao giờ được lưu trong request ghi nhận:** body có trường mật khẩu/OTP/secret hoặc chứa mật khẩu đã
+  biết được che `***` (vd đăng nhập lại giữa lúc ghi thủ công 3c, form đổi mật khẩu), request đánh dấu nhạy cảm và không
+  bao giờ bật sẵn; header phiên (`x-csrf-token`, `x-xsrf-token`…) không lưu. Dự án cũ được làm sạch khi mở.
+- **Cookie / `Authorization` chỉ lưu ở `crawl/auth.json`** (cùng `storage_state.json`), không còn trong `project.json`,
+  `discover.json`, `analysis.json`; dự án cũ tự chuyển khi mở. Cảnh báo khi tải script có nhúng cookie/token.
+- **Mã UC có ký tự cấm của Windows** (`UC:01`, `A"B`) không còn làm hỏng bước sinh script.
+- **TLS mặc định kiểm tra chứng chỉ;** tuỳ chọn "Bỏ qua kiểm tra chứng chỉ HTTPS" theo từng dự án ở bước 1 (có cảnh báo),
+  thông báo rõ khi gặp chứng chỉ tự ký. **SSH:** khoá máy chủ chỉ được tin cậy khi bấm "Kiểm tra kết nối" ở bước 6 (lưu
+  `workspace/known_hosts`, hiện vân tay SHA256); máy lạ hoặc khoá bị đổi → từ chối.
+- JMeter: request mất phiên mang mã `SESSION_LOST` như k6.
+
+## 2026-10-02 – Sửa lỗi theo báo cáo review 2026-10-01
+
+### An toàn dữ liệu
+- **GET ghi dữ liệu** (`/api/hoso/markread?id=1`, `/ho-so/xu-ly?id=1`, `Handler.ashx?action=delete`, `?markSeen=1`): GET do
+  trang gọi bằng JS có từ ghi bị **chặn khi quét** và **tắt mặc định ở bước 5** (trước luôn bật → load test lặp lại N VU). Link menu
+  trỏ vào 1 bản ghi cụ thể có từ ghi không được mở (trang danh sách `/HoSo/XuLy` vẫn quét). Cảnh báo ở 5a liệt kê cả GET.
+  Tắt bằng `crawler.block_get_writes: false`. `POST …/view` (ghi nhận đã xem) không còn được coi là truy vấn.
+- Bộ chặn ghi **fail-closed**: lỗi khi xét request → huỷ request (trước cho qua). Menu ⋮ không bấm thêm: Archive, Mark as read,
+  Resend, Reopen, Undelete, Dismiss, Chấp nhận, Đồng bộ…
+- **Đăng nhập thủ công không còn lưu mật khẩu/OTP thật** vào `auth.json`/`project.json`/script: mẫu body thay theo **tên trường**
+  (username/password/matkhau…), OTP/CAPTCHA để trống; không gỡ được mật khẩu → không lưu mẫu (dùng cookie/header tĩnh).
+- Mẫu body đăng nhập đúng với tài khoản kiểu `user01/user01`, `admin123/admin`, mật khẩu trùng số khác trong body.
+- Mật khẩu cả nhóm tài khoản (`PERFTOOL_ACCOUNTS`) và mật khẩu máy chủ không còn lọt sang môi trường của k6/JMeter/collector.
+- Xoá dự án xoá luôn mật khẩu đã lưu trong Windows Credential Manager.
+- Tuỳ chọn `security.skip_tls_verify` (crawler, kiểm tra đăng nhập, k6) và `security.ssh_auto_add_host` (SSH monitor);
+  mặc định giữ như cũ cho môi trường kiểm thử dùng chứng chỉ tự ký.
+- Bộ lọc SQL chỉ-đọc chặn thêm `pg_read_binary_file`, `pg_ls_dir`, `dblink_*`, `OPENROWSET`, `pg_sleep`, `setval`…
+
+### Đúng đắn kết quả
+- **Mất phiên = lỗi:** request bị chuyển về trang đăng nhập được tính là lỗi (`SESSION_LOST`) ở cả k6 (metric
+  `perftool_session_lost`) và JMeter (assertion URL); trước HTTP 200 của trang login được tính "Đạt".
+- **JMeter chạy cùng hồ sơ tải với k6** (Stress 50→150% theo bậc, Spike…) bằng nhiều Thread Group có độ trễ; báo cáo ghi đúng thời
+  lượng theo bậc. JMeter không ghi bước redirect con (`…-0`, `…-1`) thành request riêng (trước bị đếm trùng).
+- Công cụ thoát lỗi (mã ≠ 0, k6 ≠ 99) → lượt **Lỗi**, kể cả khi có vài dòng dữ liệu; file chỉ có dòng tiêu đề không tính là dữ liệu.
+- Đổi ngưỡng p95 riêng của UC ở bước 5 sau khi chạy → bước 8–10 tự tính lại. Dòng JTL cụt bị bỏ (trước thành 1 lỗi của UC rỗng).
+- k6: threshold theo khoá UC an toàn (mã có `,` `}` không phá script), chỉ tính request nghiệp vụ (bỏ LOGIN) như bước 8;
+  `discardResponseBodies` (soak dài không cạn RAM). JMeter: mật khẩu có `"`/`\` không phá body JSON; header token không gắn lên LOGIN.
+
+### Ổn định
+- Xoá ô Think time ở bước 5 không còn làm hỏng script và **làm dự án biến mất**; dự án có `project.json` hỏng được báo ở thanh bên.
+- Mã UC trùng được khử khi import/sửa (`UC-002 (2)`) và cảnh báo ở bước 2; bước 5 không còn lỗi khoá trùng.
+- Tái sử dụng PID sau khi khởi động lại máy: không còn báo "đang chạy" sai hay nút Dừng diệt nhầm tiến trình khác.
+- `samples/demo_server.py` chạy được trên Python 3.10/3.11.
+- Thời lượng: từ chối `1m30`, `-5m`, `0` (giữ tải), chuỗi có xuống dòng; `500ms` làm tròn lên 1s. Stress với 1 VU không còn bậc 0 VU.
+- Đọc file tài khoản: dấu phân cách theo dòng đầu (`|`, `;`, tab), mật khẩu chứa dấu phân cách không bị cắt.
+- Import UC: sheet trống báo lỗi rõ ràng; dòng nhóm "2. Phân hệ…" nhận đúng khi bật tự điền phân hệ; mã/tên UC chuẩn hoá NFC.
+
 ## 2026-09-30 – Sửa lỗi từ đợt kiểm thử 5 agent
 
 ### An toàn dữ liệu (bước 3 → 5 → 7)

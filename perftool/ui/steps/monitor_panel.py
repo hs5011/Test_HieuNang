@@ -228,6 +228,10 @@ def _servers_section(p: Project) -> None:
                     st.success("Kết nối thành công – " + ", ".join(
                         f"{METRICS[k][0]} {store.fmt_val(v, METRICS[k][1])}" for k, v in vals.items())
                         + (f" · tổng RAM {ram / 1024:.1f} GB" if ram else ""))
+                    fp = sources.host_fingerprint(s) if s.access == "ssh" else ""
+                    if fp:
+                        st.caption(f"🔐 Khoá máy chủ đã tin cậy: `{fp}` – đối chiếu với quản trị máy chủ nếu kết nối "
+                                   "lần đầu. Các lần thu số liệu sau chỉ kết nối tới máy có đúng khoá này.")
                 except Exception as e:  # noqa: BLE001
                     state.save(p)
                     st.error(f"Không đọc được số liệu: {e}")

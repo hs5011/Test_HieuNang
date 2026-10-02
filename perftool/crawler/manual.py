@@ -296,6 +296,7 @@ class ManualRecorder:
         try:
             rec = RequestRecorder(page)
             rec.blocked = self.c.recorder.blocked
+            rec.secrets = self.c.recorder.secrets
             self._recorders[page] = rec
         except Exception:  # noqa: BLE001
             pass
@@ -313,10 +314,10 @@ class ManualRecorder:
         if newest is not self.c.page:
             self._finish(before_ms=float("inf"))
             self.seg = None
-            blocked = self.c.recorder.blocked
+            blocked, secrets = self.c.recorder.blocked, self.c.recorder.secrets
             self.c.page = newest
             self.c.recorder = self._recorders.get(newest) or RequestRecorder(newest)
-            self.c.recorder.blocked = blocked
+            self.c.recorder.blocked, self.c.recorder.secrets = blocked, secrets
             self.c.log(f"  (chuyển sang tab mới: {newest.url})")
         return newest
 

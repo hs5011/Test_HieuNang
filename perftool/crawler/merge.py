@@ -6,7 +6,7 @@ import json
 from rapidfuzz import fuzz
 
 from ..models import AuthCapture, CapturedRequest, ModuleInfo, PageInfo, PopupInfo, Project
-from ..storage import sub_dir
+from ..storage import hydrate_session, sub_dir
 from .interactions import page_key, route_of, screen_key
 
 MANUAL_MODULE = "Ghi thao tác thủ công"
@@ -32,6 +32,7 @@ def merge_discover(p: Project) -> Project:
     mods += [m for m in p.modules if m.name not in names]   # giữ phân hệ người dùng tự thêm
     p.modules = mods
     p.auth = AuthCapture.model_validate(data.get("auth", {}))
+    hydrate_session(p)
     return p
 
 
@@ -50,6 +51,7 @@ def merge_analysis(p: Project) -> Project:
     auth = AuthCapture.model_validate(data.get("auth", {}))
     if auth.login_url or auth.static_headers or auth.cookies:
         p.auth = auth
+    hydrate_session(p)       # cookie / Authorization chỉ nằm ở crawl/auth.json
     apply_record(p)          # quét lại tự động không làm mất dữ liệu ghi thao tác thủ công
     p.scores = []
     return p

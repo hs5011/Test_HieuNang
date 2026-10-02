@@ -53,12 +53,37 @@ def test_guard_blocks_write_methods(method):
     assert (method, "https://x.vn/api/tasks/save/1") in g.blocked
 
 
-@pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS", "get", None])
-def test_guard_allows_read_methods_even_with_write_words(method):
+@pytest.mark.parametrize("method", ["HEAD", "OPTIONS"])
+def test_guard_allows_head_options_even_with_write_words(method):
     g = WriteGuard()
     r = FakeRoute(method, "https://x.vn/api/tasks/delete?id=1")
     g._handle(r)
     assert r.calls == [("fallback",)] and g.count == 0
+
+
+@pytest.mark.parametrize("method", ["GET", "get", None])
+def test_guard_blocks_get_xhr_with_write_words(method):
+    """Nhiều hệ thống cũ ghi dữ liệu bằng GET -> GET xhr/fetch có từ ghi cũng bị chặn khi quét."""
+    g = WriteGuard()
+    r = FakeRoute(method, "https://x.vn/api/tasks/delete?id=1")
+    g._handle(r)
+    assert r.calls == [("abort", "blockedbyclient")] and g.count == 1
+
+
+def test_guard_get_document_navigation_not_blocked():
+    """Điều hướng trang (document) do crawler tự lọc link, bộ chặn không huỷ."""
+    g = WriteGuard()
+    r = FakeRoute("GET", "https://x.vn/HoSo/XuLy", rtype="document")
+    g._handle(r)
+    assert r.calls == [("fallback",)]
+
+
+def test_guard_fail_closed_on_error(monkeypatch):
+    import perftool.crawler.guard as gm
+    monkeypatch.setattr(gm, "is_write_request", lambda *a, **k: 1 / 0)
+    r = FakeRoute("POST", "https://x.vn/api/x")
+    WriteGuard()._handle(r)
+    assert r.calls == [("abort", "blockedbyclient")]
 
 
 def test_guard_falls_back_to_continue_on_old_playwright():

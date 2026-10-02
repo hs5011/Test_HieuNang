@@ -129,10 +129,11 @@ def test_numeric_codes_are_zero_padded():
 
 
 def test_duplicate_codes_are_kept_not_silently_dropped():
-    """Mã trùng trong file gốc: importer giữ nguyên cả 2 UC (không mất dữ liệu) - trùng mã được phát hiện ở bước sinh script."""
-    csv = "Mã UC,Tên UC\nUC-1,A\nUC-1,B\n"
+    """Mã trùng trong file gốc: giữ cả 2 UC (không mất dữ liệu) và khử trùng mã – mã UC là khoá của điểm/kịch bản/
+    ngưỡng/kết quả, trùng mã làm UC sau đè UC trước và bước 5 lỗi khoá trùng."""
+    csv = "Mã UC,Tên UC\nUC-1,A\nUC-1,B\n,C\nUC-003,D\n"
     _, _, ucs = _import(io.BytesIO(csv.encode()), "a.csv")
-    assert [(u.code, u.name) for u in ucs] == [("UC-1", "A"), ("UC-1", "B")]
+    assert [(u.code, u.name) for u in ucs] == [("UC-1", "A"), ("UC-1 (2)", "B"), ("UC-003", "C"), ("UC-003 (2)", "D")]
 
 
 # ------------------------------------------------------------------ mô tả rất dài / số bước

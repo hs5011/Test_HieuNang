@@ -33,14 +33,68 @@ ZABBIX_SECRET, PROM_SECRET = "zabbix:secret", "prometheus:token"
 
 # ---------------------------------------------------------------- Performance Monitor
 
-def _ssh_client(s: MonitorServer, password: str):
+def known_hosts_file():
+    from ..config import WORKSPACE_DIR
+    return WORKSPACE_DIR / "known_hosts"
+
+
+def _ssh_client(s: MonitorServer, password: str, trust_new: bool = False):
+    """Kết nối SSH có kiểm tra khoá máy chủ (chống giả mạo máy chủ để lấy mật khẩu SSH).
+
+    Khoá tin cậy: ~/.ssh/known_hosts + workspace/known_hosts. Máy chưa biết chỉ được ghi nhận khi người dùng CHỦ ĐỘNG bấm
+    "Kiểm tra kết nối" (trust_new=True) – hoặc security.ssh_auto_add_host=true; còn lại bị từ chối. Khoá đã ghi nhận mà
+    máy chủ trả khoá khác -> luôn từ chối (BadHostKeyException)."""
     import paramiko
+    from .. import config
+    kh = known_hosts_file()
     c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(s.host, port=int(s.ssh_port or 22), username=s.ssh_user, password=password or None,
-              key_filename=s.ssh_key_file or None, timeout=15, banner_timeout=15, auth_timeout=15,
-              allow_agent=False, look_for_keys=False)
+    try:
+        c.load_system_host_keys()      # ~/.ssh/known_hosts
+    except OSError:
+        pass
+    try:
+        if kh.exists():
+            c.load_host_keys(str(kh))      # khoá mới cũng được lưu vào file này
+        else:
+            kh.parent.mkdir(parents=True, exist_ok=True)
+            kh.touch()
+            c.load_host_keys(str(kh))
+    except OSError:
+        pass
+    if trust_new or config.get("security.ssh_auto_add_host", False):
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())    # AutoAddPolicy lưu vào file load_host_keys
+    else:
+        c.set_missing_host_key_policy(paramiko.RejectPolicy())
+    try:
+        c.connect(s.host, port=int(s.ssh_port or 22), username=s.ssh_user, password=password or None,
+                  key_filename=s.ssh_key_file or None, timeout=15, banner_timeout=15, auth_timeout=15,
+                  allow_agent=False, look_for_keys=False)
+    except paramiko.BadHostKeyException as e:
+        raise RuntimeError(f"Khoá máy chủ SSH {s.host} KHÁC khoá đã ghi nhận – có thể bị giả mạo máy chủ. Nếu máy chủ vừa "
+                           f"cài lại, xoá dòng của máy này trong {kh} rồi kiểm tra kết nối lại.") from e
+    except paramiko.SSHException as e:
+        if "not found in known_hosts" in str(e):
+            raise RuntimeError(f"Máy chủ SSH {s.host} chưa được tin cậy – bấm 'Kiểm tra kết nối' ở bước 6 để xác nhận "
+                               "khoá máy chủ trước khi chạy test.") from e
+        raise
     return c
+
+
+def host_fingerprint(s: MonitorServer) -> str:
+    """Vân tay SHA256 của khoá máy chủ đã ghi nhận (hiển thị cho người dùng đối chiếu)."""
+    import base64
+    import hashlib
+
+    import paramiko
+    try:
+        hk = paramiko.HostKeys(str(known_hosts_file()))
+    except (OSError, paramiko.SSHException):
+        return ""
+    port = int(s.ssh_port or 22)
+    entry = hk.lookup(s.host if port == 22 else f"[{s.host}]:{port}") or {}
+    for typ, key in entry.items():
+        return f"{typ} SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+    return ""
 
 
 def _ssh_run(c, cmd: str, timeout: int = 60) -> str:
@@ -137,7 +191,11 @@ def perfmon_stream(s: MonitorServer, password: str, interval_s: int, stop: Calla
 
 
 def test_server(s: MonitorServer, password: str) -> tuple[dict[str, float], Optional[float]]:
-    """Đọc thử 1 mẫu bộ đếm + tổng RAM. Trả về ({metric: giá trị}, tổng RAM MB)."""
+    """Đọc thử 1 mẫu bộ đếm + tổng RAM. Trả về ({metric: giá trị}, tổng RAM MB).
+
+    Người dùng chủ động bấm kiểm tra -> máy SSH chưa biết được ghi nhận khoá vào workspace/known_hosts (tin cậy lần đầu)."""
+    if s.access == "ssh":
+        _ssh_client(s, password, trust_new=True).close()
     ram = total_ram_mb(s, password)
     s2 = s.model_copy(update={"ram_total_mb": ram or s.ram_total_mb})
     vals: dict[str, float] = {}
@@ -175,7 +233,9 @@ def check_readonly(sql: str) -> None:
         raise ValueError("Chỉ cho phép 1 câu truy vấn đọc dữ liệu (SELECT / WITH / SHOW).")
     if re.search(r"(?i)\b(insert|update|delete|merge|drop|alter|truncate|create|grant|revoke|exec|execute|into|"
                  r"outfile|dumpfile|copy|call|load|lock|set_config|pg_terminate_backend|pg_cancel_backend|"
-                 r"pg_reload_conf|pg_read_file|pg_write_file|lo_import|lo_export|dbms_\w+|xp_\w+|sp_\w+)\b", raw):
+                 r"pg_reload_conf|pg_read_file|pg_read_binary_file|pg_write_file|pg_ls_dir|pg_stat_file|pg_sleep\w*|"
+                 r"setval|nextval|dblink\w*|openrowset|opendatasource|openquery|lo_import|lo_export|dbms_\w+|"
+                 r"utl_\w+|xp_\w+|sp_\w+|waitfor|benchmark|sleep)\b", raw):
         raise ValueError("Câu truy vấn chứa lệnh/hàm có thể thay đổi dữ liệu (INSERT, SELECT … INTO, DROP, "
                          "pg_terminate_backend…) – không được phép.")
 

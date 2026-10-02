@@ -65,11 +65,17 @@ def main() -> int:
             run.finished_at = _now()
             # chỉ tính dữ liệu được ghi trong lượt này, tránh báo nhầm kết quả cũ là mới
             has_data = has_fresh_data(run)
-            # k6 trả mã 99 khi vượt threshold nhưng vẫn có dữ liệu hợp lệ
-            run.status = "done" if (rc == 0 or (run.tool == "k6" and rc == 99)) and has_data else (
-                "done" if has_data else "failed")
+            # k6 trả mã 99 khi vượt threshold nhưng vẫn có dữ liệu hợp lệ; mã khác 0 còn lại = công cụ lỗi/bị dừng
+            # -> "failed" dù có vài dòng dữ liệu (tránh đưa kết quả dở dang vào bước 8–10 như một lượt hoàn chỉnh)
+            ok_rc = rc == 0 or (run.tool == "k6" and rc == 99)
+            run.status = "done" if ok_rc and has_data else "failed"
             if run.status == "failed":
                 failed += 1
+                if has_data:
+                    log(f"Lượt {rid} có dữ liệu nhưng công cụ thoát lỗi (mã {rc}) – không đưa vào phân tích; "
+                        "xem tool.log của lượt chạy.")
+                elif ok_rc:
+                    log(f"Lượt {rid}: công cụ thoát bình thường nhưng không ghi được dòng kết quả nào.")
             save_run_file(run)
             log(f"Kết thúc lượt {rid}: mã thoát {rc}, trạng thái {run.status}")
             if project and project.monitor.enabled:

@@ -101,6 +101,13 @@ def _db_worker(db, pwd: str, interval: int, sink: store.CsvSink, stop: threading
             break
 
 
+def _create_time(pid: int):
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.Error, ValueError):
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", required=True)
@@ -126,9 +133,11 @@ def main() -> int:
     for t in threads:
         t.start()
     log(f"Đang thu số liệu vào {sink.path.name} (mỗi {interval} giây)")
+    parent_ct = _create_time(a.parent) if a.parent else None
     try:
         while not stop.is_set():
-            if a.parent and not psutil.pid_exists(a.parent):
+            # so cả thời điểm tạo tiến trình: PID của runner đã kết thúc có thể bị tiến trình khác dùng lại
+            if a.parent and _create_time(a.parent) != parent_ct:
                 break
             if a.stop_file and os.path.exists(a.stop_file):
                 break

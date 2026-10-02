@@ -133,9 +133,10 @@ def page_html(path: str) -> str:
             f"</button></td></tr>" for i in range(1, rows + 1)) + "</tbody></table>"
             "<div class='pagination'><button class='active'>1</button><button onclick='gotoPage(2)'>2</button>"
             "<button aria-label='Next page' onclick='gotoPage(2)'>›</button></div>")
+    post_body = ',body:JSON.stringify({keyword:"",page:1})'    # tách khỏi f-string: Python < 3.12 cấm \ trong biểu thức
     calls = "".join(
         f"fetch('{u}',{{method:'{m}',headers:{{'Authorization':'Bearer '+localStorage.getItem('token'),"
-        f"'Content-Type':'application/json'}}{',body:JSON.stringify({keyword:\"\",page:1})' if m == 'POST' else ''}}});"
+        f"'Content-Type':'application/json'}}{post_body if m == 'POST' else ''}}});"
         for m, u in apis)
     return layout(title, f"{filters}<p>{btns}</p>{table}<script>{MODAL_JS}{calls}</script>")
 

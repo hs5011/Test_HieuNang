@@ -9,9 +9,10 @@ from urllib.parse import urlparse
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from markupsafe import escape
 
+from .. import config
 from ..config import TEMPLATES_DIR
 from ..models import AuthCapture, Project, TestScenario
-from .profile import parse_duration, scenario_name, split_vus, stages_for
+from .profile import jmeter_blocks, scenario_name, split_vus, stages_for
 
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined,
                    trim_blocks=False, lstrip_blocks=False, keep_trailing_newline=True)
@@ -80,6 +81,14 @@ def _url_parts(url: str) -> dict:
     return {"protocol": u.scheme or "https", "host": u.hostname or "", "port": port, "path": path}
 
 
+# URL trang đăng nhập (giống LOGIN_PAGE_RE của script k6): bước nghiệp vụ bị chuyển về đây = mất phiên -> lỗi
+LOGIN_PAGE_RE = re.compile(r"(login|dang-nhap|signin|sign-in|auth)", re.I)
+LOGIN_PAGE_JAVA_RE = "(?i)(login|dang-nhap|signin|sign-in|auth)"
+
+# escape JSON giá trị biến JMeter (bỏ 2 dấu " ngoài cùng); không chứa dấu phẩy nên không cần escape tham số hàm
+_JM_JSON_ESC = "${{__groovy(groovy.json.JsonOutput.toJson(vars.get('{}') ?: '').drop(1).dropRight(1))}}"
+
+
 def _login_ctx(auth: AuthCapture) -> dict:
     ctype = auth.login_content_type or ""
     urlenc = "x-www-form-urlencoded" in ctype
@@ -89,6 +98,10 @@ def _login_ctx(auth: AuthCapture) -> dict:
     if urlenc:
         jbody = safe.replace("{{USERNAME}}", "${__urlencode(${USERNAME})}").replace(
             "{{PASSWORD}}", "${__urlencode(${PASSWORD})}")
+    elif "json" in ctype or body.lstrip()[:1] in ("{", "["):
+        # mật khẩu có " hoặc \ phá cú pháp JSON -> escape như JSON.stringify của k6
+        jbody = safe.replace("{{USERNAME}}", _JM_JSON_ESC.format("USERNAME")).replace(
+            "{{PASSWORD}}", _JM_JSON_ESC.format("PASSWORD"))
     else:
         jbody = safe.replace("{{USERNAME}}", "${USERNAME}").replace("{{PASSWORD}}", "${PASSWORD}")
     return {
@@ -116,6 +129,7 @@ def _steps(sc: TestScenario) -> list[dict]:
              "content_type": s.content_type or "", "think": float(s.think_time_s or 0),
              "think_ms": int(float(s.think_time_s or 0) * 1000), "u": _url_parts(s.url),
              "extract": s.extract_token or "", "var": _ident(s.token_var), "use": _ident(s.use_token),
+             "login_guard": not LOGIN_PAGE_RE.search(s.url or ""),
              "headers": dict(s.headers or {})}
             for s in sc.steps if s.enabled]
 
@@ -148,10 +162,12 @@ def _common(project: Project, scenarios: list[TestScenario], file_name: str) -> 
         # token/cookie phiên chỉ nhúng vào script khi thật sự dùng chế độ header/cookie tĩnh (tránh lộ phiên đăng nhập)
         "auth_mode": auth_mode, "static_headers": project.auth.static_headers if auth_mode == "static_headers" else {},
         "cookies": _cookies(project.auth, project.login.base_url) if auth_mode == "static_headers" else [],
+        "insecure_tls": config.insecure_tls(project.login),
         "login": _login_ctx(project.auth),
         "http_timeout": cfg.http_timeout_s, "think_time": cfg.think_time_s, "think_ms": int(cfg.think_time_s * 1000),
         "p95_threshold": cfg.p95_threshold_ms, "error_rate_threshold": cfg.error_rate_threshold,
         "multi_accounts": cfg.account_mode == "multi" and auth_mode == "login_per_vu",
+        "login_page_re": LOGIN_PAGE_JAVA_RE,
     }
 
 
@@ -173,14 +189,11 @@ def generate_k6(project: Project, scenarios: list[TestScenario], out_file: Path)
 def generate_jmeter(project: Project, scenarios: list[TestScenario], out_file: Path) -> Path:
     cfg = project.test_config
     vus_list = split_vus(cfg.vus, len(scenarios)) if len(scenarios) > 1 else [cfg.vus]
-    ramp = parse_duration(cfg.ramp_up)
-    hold = parse_duration(cfg.duration)
-    if cfg.scenario_type == "smoke":
-        ramp = min(ramp, 5)
     ctx = _common(project, scenarios, out_file.name)
+    # cùng hồ sơ tải với k6 (Stress theo bậc 50→150%, Spike…): mỗi bậc tăng tải = 1 Thread Group có độ trễ khởi động
     ctx["scenarios"] = [{
-        "uc_code": sc.uc_code, "uc_name": sc.uc_name, "vus": max(int(v), 1), "ramp_s": ramp,
-        "duration_s": ramp + max(hold, 30), "steps": _steps(sc),
+        "uc_code": sc.uc_code, "uc_name": sc.uc_name, "vus": max(int(v), 1), "steps": _steps(sc),
+        "groups": jmeter_blocks(stages_for(cfg, v)),
     } for sc, v in zip(scenarios, vus_list)]
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(_env.get_template("jmeter_plan.jmx.j2").render(**ctx), encoding="utf-8")

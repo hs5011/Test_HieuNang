@@ -24,10 +24,18 @@ def start_live(p: Project, log: Log) -> Optional[subprocess.Popen]:
     stop_file.unlink(missing_ok=True)
     proc = subprocess.Popen([sys.executable, "-u", "-m", "perftool.monitor.collector", "--project", p.id,
                              "--parent", str(os.getpid()), "--stop-file", str(stop_file)],
-                            cwd=str(ROOT_DIR), env={**os.environ, "PYTHONIOENCODING": "utf-8"}, stdout=logf, stderr=subprocess.STDOUT)
+                            cwd=str(ROOT_DIR), env=_collector_env(), stdout=logf, stderr=subprocess.STDOUT)
+    logf.close()      # tiến trình con đã giữ bản sao handle
     proc.perftool_stop_file = stop_file
     log(f"Bắt đầu thu số liệu tài nguyên máy chủ (tiến trình {proc.pid}, nhật ký monitor/collector.log)")
     return proc
+
+
+def _collector_env() -> dict[str, str]:
+    """Collector chỉ cần mật khẩu máy chủ (PERFTOOL_MONITOR_SECRETS), không cần mật khẩu tài khoản kiểm thử."""
+    env = {k: v for k, v in os.environ.items() if k.upper() not in ("PERFTOOL_ACCOUNTS", "PERFTOOL_PASSWORD")}
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def stop_live(proc: Optional[subprocess.Popen], log: Log) -> None:

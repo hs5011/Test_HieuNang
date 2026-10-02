@@ -7,7 +7,7 @@ from __future__ import annotations
 import streamlit as st
 
 from perftool import __version__
-from perftool.storage import create_project, delete_project, list_projects
+from perftool.storage import BROKEN_PROJECTS, create_project, delete_project, list_projects
 from perftool.ui import state
 from perftool.ui.steps import (s01_info, s02_import, s03_crawl, s04_score, s05_confirm, s06_tool, s07_run,
                                s08_results, s09_charts, s10_report)
@@ -25,6 +25,9 @@ def sidebar() -> None:
     with st.sidebar:
         st.markdown(f"## ⚡ PerfTool <small>v{__version__}</small>", unsafe_allow_html=True)
         projects = list_projects()
+        if BROKEN_PROJECTS:
+            st.warning("Không nạp được dự án (file project.json hỏng): "
+                       + "; ".join(f"`{k}` – {v}" for k, v in BROKEN_PROJECTS.items()))
         ids = [p.id for p in projects]
         labels = {p.id: f"{p.info.name}  ·  {p.updated_at[:10]}" for p in projects}
         cur = st.session_state.get("project_id")

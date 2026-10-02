@@ -30,7 +30,11 @@ crawler:
                     "reset", "đặt lại", "từ chối", "reject", "thu hồi", "phát hành", "publish",
                     "hoàn thành", "complete", "finish", "kết thúc", "tiếp nhận", "nhận việc", "trả lại", "đánh dấu",
                     "khôi phục", "restore", "nhân bản", "sao chép", "copy", "clone", "kích hoạt", "activate",
-                    "vô hiệu", "disable", "đóng băng", "hủy bỏ", "huỷ bỏ"]
+                    "vô hiệu", "disable", "đóng băng", "hủy bỏ", "huỷ bỏ",
+                    "archive", "lưu trữ", "mark as read", "mark as unread", "đã đọc", "đã xem", "resend", "gửi lại",
+                    "reopen", "mở lại", "undelete", "dismiss", "bỏ qua", "chấp nhận", "accept", "đồng bộ", "sync",
+                    "forward", "ghim", "bỏ ghim", "pin", "unpin", "theo dõi", "bỏ theo dõi", "follow", "unfollow",
+                    "đóng việc", "đóng hồ sơ", "close", "like", "thích", "subscribe", "đăng ký"]
   # Quét tương tác mở rộng (cùng công tắc với quét popup ở bước 3):
   #  - menu ⋮ / "..." / nút thả xuống trên dòng đầu tiên của bảng: mở menu, bấm từng mục KHÔNG thuộc popup_blacklist
   #    (mục mở popup -> ghi popup; mục chuyển trang -> ghi trang con rồi quay lại);
@@ -60,19 +64,41 @@ crawler:
                    "luu*", "them", "sua*", "xoa*", "duyet", "phancong", "giahan", "hoanthanh", "tiepnhan",
                    "capnhat", "=trinh", "trinhky", "trinhduyet", "gui", "huy", "ky", "kyso", "tralai", "thuhoi", "tuchoi", "xacnhan", "dongy",
                    "banhanh", "phathanh", "xuly", "chuyenxuly", "chuyentiep", "chuyenhoso", "chuyenvanban", "danhdau",
-                   "daxem", "dadoc", "khoiphuc", "mokhoa", "=khoa", "phanphoi", "ketthuc", "dangky"]
+                   "daxem", "dadoc", "khoiphuc", "mokhoa", "=khoa", "phanphoi", "ketthuc", "dangky",
+                   "markseen", "=seen", "markunread", "dismiss", "resend", "reopen", "undelete", "=sync", "dongbo",
+                   "chapnhan", "=ack", "=pin", "=unpin", "=touch", "=open", "=visit", "=follow", "=unfollow",
+                   "subscribe", "=like", "=unlike", "=vote", "=star", "=unstar", "=mark", "=close", "=hide", "=snooze",
+                   "=mute", "readall"]
+  # GET do trang gọi bằng JS (xhr/fetch) có từ ghi ở trên (…/markread?id=1, Handler.ashx?action=delete) cũng bị chặn khi
+  # quét (nhiều hệ thống cũ ghi dữ liệu bằng GET) và mặc định TẮT trong kịch bản test (bước 5). false = cho GET qua.
+  block_get_writes: true
+  # Mức bộ chặn ghi khi crawler tự điều hướng / tải trang (3a, 3b): "strict" = chỉ cho qua POST mang tên truy vấn (GetAll,
+  # Search…) – POST ghi nhận lượt xem lúc tải trang (/api/log/visit, /api/hoso/view) bị huỷ; "keyword" = lỏng hơn (chỉ
+  # chặn POST có từ ghi), dùng khi trang cần POST không rõ tên để tải dữ liệu.
+  page_load_guard: strict
   read_prefixes: ["get", "search", "list", "find", "filter", "query", "count", "check", "export", "view", "load",
-                  "fetch", "paging", "report", "statistic", "thongke", "tim", "xem", "lay", "negotiate"]
+                  "fetch", "paging", "report", "statistic", "thongke", "tim", "xem", "lay", "negotiate",
+                  "danhsach", "chitiet", "tracuu", "timkiem", "baocao", "dsach"]
   # Mức "strict": đoạn cuối đường dẫn bắt đầu bằng các từ này (PostData, ExecuteStore…) được cho qua nếu không chứa write_keywords
   weak_read_prefixes: ["post", "execute", "hf_execute", "run"]
   read_keywords: ["search", "list", "query", "filter", "paging", "report", "statistic", "thong-ke", "negotiate",
-                  "detail", "collect", "installations", "getaccountinfo"]
+                  "detail", "collect", "installations", "getaccountinfo", "danh-sach", "chi-tiet", "bao-cao",
+                  "tra-cuu", "tim-kiem"]
   # Ghi thao tác thủ công (bước 3): thời gian ghi tối đa mỗi lần (phút)
   record_max_minutes: 60
   # Chỉ ghi nhận request có loại sau
   capture_resource_types: ["xhr", "fetch", "document"]
   # Bỏ qua tài nguyên tĩnh
   static_extensions: [".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ttf", ".ico", ".map", ".webp"]
+
+# An toàn kết nối
+security:
+  # true: bỏ qua kiểm tra chứng chỉ HTTPS cho MỌI dự án (crawler, kiểm tra đăng nhập, script k6). Nên để false và chỉ
+  # bật theo từng dự án ở bước 1 › Tuỳ chọn nâng cao khi máy chủ kiểm thử dùng chứng chỉ tự ký.
+  skip_tls_verify: false
+  # true: tự tin cậy khoá máy chủ SSH lần đầu kết nối ở mọi nơi (kể cả khi đang chạy test). false (khuyến nghị): khoá
+  # máy chủ chỉ được ghi nhận khi bấm "Kiểm tra kết nối" ở bước 6 (lưu ở workspace/known_hosts); khoá đổi -> từ chối.
+  ssh_auto_add_host: false
 
 # Trọng số các tiêu chí đánh giá độ phức tạp UC (tổng không bắt buộc = 1, sẽ tự chuẩn hoá)
 scoring:

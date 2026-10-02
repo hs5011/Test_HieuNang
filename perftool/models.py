@@ -4,11 +4,25 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _finite(v: Any, default: Any) -> Any:
+    """NaN/None/rỗng (ô số bị xoá trên bảng của Streamlit) -> giá trị mặc định, tránh ghi "null"/NaN vào project.json
+    làm dự án không nạp lại được và script k6/JMX sinh lỗi."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
 
 
 # ---------------------------------------------------------------- Bước 1
@@ -32,6 +46,8 @@ class LoginConfig(BaseModel):
     success_url_contains: str = ""      # dấu hiệu đăng nhập thành công (tuỳ chọn)
     manual_login: bool = False          # người dùng tự đăng nhập (OTP/CAPTCHA) trên trình duyệt
     headless: bool = False
+    # bỏ qua kiểm tra chứng chỉ HTTPS (chỉ cho máy chủ kiểm thử dùng chứng chỉ tự ký): crawler, kiểm tra đăng nhập, k6
+    skip_tls_verify: bool = False
     # Tài khoản kiểm thử bổ sung (chỉ lưu tên đăng nhập; mật khẩu ở phiên / Windows Credential Manager)
     extra_accounts: list[str] = Field(default_factory=list)
     include_main_in_pool: bool = True   # tài khoản chính cũng tham gia chia cho các VU
@@ -69,6 +85,19 @@ class CapturedRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)   # header tuỳ biến (không chuẩn) của ứng dụng
     blocked: bool = False       # request ghi dữ liệu bị bộ chặn ghi huỷ khi quét/ghi thao tác (không tới máy chủ)
     origin: str = ""            # "" = crawler tự quét | "manual" = ghi thao tác thủ công
+    sensitive: bool = False     # body có mật khẩu/OTP/secret (đã che "***") – không bao giờ bật sẵn trong kịch bản
+
+    @model_validator(mode="after")
+    def _redact(self) -> "CapturedRequest":
+        """Che mật khẩu/OTP trong body và header phiên mỗi khi tạo/nạp request (kể cả record.json, project.json cũ)."""
+        from .crawler.login_capture import redact_body, redact_headers
+        if self.post_data:
+            body, hit = redact_body(self.post_data)
+            if hit:
+                self.post_data, self.sensitive = body, True
+        if self.headers:
+            self.headers = redact_headers(self.headers)
+        return self
 
 
 # Loại tương tác quét được trên 1 trang (PopupInfo.kind)
@@ -169,6 +198,11 @@ class ScenarioStep(BaseModel):
     use_token: str = ""         # dùng token trong biến này làm Authorization (trống = token đăng nhập chính)
     headers: dict[str, str] = Field(default_factory=dict)   # header riêng gửi kèm (vd: origin, x-api-key...)
 
+    @field_validator("think_time_s", mode="before")
+    @classmethod
+    def _v_think(cls, v: Any) -> Any:
+        return max(_finite(v, 0.0), 0.0)
+
 
 class TestScenario(BaseModel):
     __test__ = False  # không phải test case của pytest
@@ -177,6 +211,12 @@ class TestScenario(BaseModel):
     module: str = ""
     p95_threshold_ms: Optional[float] = None   # ghi đè ngưỡng chung
     steps: list[ScenarioStep] = Field(default_factory=list)
+
+    @field_validator("p95_threshold_ms", mode="before")
+    @classmethod
+    def _v_thr(cls, v: Any) -> Any:
+        v = _finite(v, None)
+        return v if v else None
 
 
 # ---------------------------------------------------------------- Bước 6-7
@@ -196,6 +236,11 @@ class TestConfig(BaseModel):
     run_mode: str = "sequential"        # sequential: chạy từng UC | combined: gộp tất cả UC cùng lúc
     account_mode: str = "multi"         # single: mọi VU dùng tài khoản chính | multi: chia đều các tài khoản cho VU
     accounts_count: int = 1             # số tài khoản thực dùng ở lượt chạy (ghi vào báo cáo, không chứa mật khẩu)
+
+    @field_validator("think_time_s", "p95_threshold_ms", "error_rate_threshold", mode="before")
+    @classmethod
+    def _v_num(cls, v: Any, info) -> Any:
+        return _finite(v, cls.model_fields[info.field_name].default)
 
 
 # ---------------------------------------------------------------- Bước 6 (tuỳ chọn): thu số liệu tài nguyên máy chủ

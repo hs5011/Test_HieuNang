@@ -39,6 +39,11 @@ def get(path: str, default: Any = None) -> Any:
     return copy.deepcopy(node)
 
 
+def insecure_tls(login: Any = None) -> bool:
+    """Có bỏ qua kiểm tra chứng chỉ HTTPS không: tuỳ chọn của dự án (bước 1) hoặc security.skip_tls_verify chung."""
+    return bool(getattr(login, "skip_tls_verify", False) or get("security.skip_tls_verify", False))
+
+
 def reload() -> None:
     _load_raw.cache_clear()
 

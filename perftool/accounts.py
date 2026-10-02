@@ -18,6 +18,7 @@ from typing import Union
 
 from unidecode import unidecode
 
+from . import config
 from .models import AuthCapture
 
 Account = tuple[str, str]
@@ -60,6 +61,7 @@ def parse_text(text: str) -> list[Account]:
 def parse_file(data: bytes, filename: str) -> list[Account]:
     """CSV/TXT/Excel. Tự tìm cột tài khoản & mật khẩu theo tên cột; nếu không có tiêu đề dùng 2 cột đầu."""
     name = filename.lower()
+    delim = ""          # Excel: không tách chuỗi
     if name.endswith((".xlsx", ".xls")):
         import pandas as pd
         df = pd.read_excel(io.BytesIO(data), header=None, dtype=str).fillna("")
@@ -76,10 +78,7 @@ def parse_file(data: bytes, filename: str) -> list[Account]:
                 continue
         if text is None:
             raise ValueError("Không đọc được file")
-        try:
-            delim = csv.Sniffer().sniff(text[:2000], delimiters=",;\t|").delimiter
-        except csv.Error:
-            delim = ","
+        delim = _first_delim(text)
         rows = list(csv.reader(io.StringIO(text), delimiter=delim))
     rows = [[str(c).strip() for c in r] for r in rows if any(str(c).strip() for c in r)]
     if not rows:
@@ -88,9 +87,26 @@ def parse_file(data: bytes, filename: str) -> list[Account]:
     ui = next((i for i, h in enumerate(header) if h in USER_ALIASES), None)
     pi = next((i for i, h in enumerate(header) if h in PASS_ALIASES), None)
     body = rows[1:] if ui is not None or pi is not None else rows
+    ncol = len(rows[0])
     ui = 0 if ui is None else ui
     pi = (1 if ui != 1 else 0) if pi is None else pi
-    return _dedupe([(r[ui] if ui < len(r) else "", r[pi] if pi < len(r) else "") for r in body])
+
+    def pwd_of(r: list[str]) -> str:
+        if pi >= len(r):
+            return ""
+        # mật khẩu ở cột cuối chứa dấu phân cách mà không đặt trong "…" -> ghép lại phần bị tách
+        if delim and pi == ncol - 1 and len(r) > ncol:
+            return delim.join(r[pi:])
+        return r[pi]
+    return _dedupe([(r[ui] if ui < len(r) else "", pwd_of(r)) for r in body])
+
+
+def _first_delim(text: str) -> str:
+    """Dấu phân cách = ký tự phân cách xuất hiện ĐẦU TIÊN trên dòng đầu (tên tài khoản không chứa dấu phân cách;
+    csv.Sniffer đoán sai khi mật khẩu chứa ',' hoặc file dùng '|')."""
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    pos = {d: first.find(d) for d in ("\t", ";", "|", ",") if d in first}
+    return min(pos, key=pos.get) if pos else ","
 
 
 # ------------------------------------------------------------------ kiểm tra đăng nhập
@@ -100,7 +116,7 @@ def _get_path(obj, path: str):
     return obj
 
 
-def check_login(auth: AuthCapture, username: str, password: str, timeout: int = 30) -> dict:
+def check_login(auth: AuthCapture, username: str, password: str, timeout: int = 30, insecure: bool = False) -> dict:
     """Gửi 1 request đăng nhập theo mẫu đã bắt được ở bước 3. Trả về {ok, status, ms, message}."""
     if not auth.login_url or not auth.login_body_template:
         return {"ok": False, "status": None, "ms": None, "message": "Chưa nhận diện được API đăng nhập (chạy bước 3)"}
@@ -116,8 +132,9 @@ def check_login(auth: AuthCapture, username: str, password: str, timeout: int = 
     req = urllib.request.Request(auth.login_url, data=body, method=auth.login_method or "POST",
                                  headers={"Content-Type": ctype, "User-Agent": "PerfTool-AccountCheck"})
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE        # giống insecureSkipTLSVerify của script k6 (môi trường kiểm thử)
+    if insecure or config.insecure_tls():
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE    # giống insecureSkipTLSVerify của script k6 (môi trường kiểm thử)
     t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
@@ -129,7 +146,9 @@ def check_login(auth: AuthCapture, username: str, password: str, timeout: int = 
                 "message": f"HTTP {e.code} – sai tài khoản/mật khẩu hoặc tài khoản bị khoá"
                            if e.code in (400, 401, 403) else f"HTTP {e.code}"}
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "status": None, "ms": None, "message": f"Không kết nối được: {e}"[:200]}
+        hint = (" – chứng chỉ HTTPS không hợp lệ; với máy chủ kiểm thử dùng chứng chỉ tự ký, tick 'Bỏ qua kiểm tra "
+                "chứng chỉ HTTPS' ở Tuỳ chọn nâng cao") if "CERTIFICATE" in str(e).upper() else ""
+        return {"ok": False, "status": None, "ms": None, "message": (f"Không kết nối được: {e}"[:200] + hint)}
     if auth.token_json_path:
         try:
             token = _get_path(json.loads(raw), auth.token_json_path)

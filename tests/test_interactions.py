@@ -12,12 +12,12 @@ API = "https://ntqlcqs.example.vn/api/services/app"
 
 def test_write_guard_keyword_level():
     # truy vấn (kể cả POST) -> cho qua
-    for m, u in [("GET", f"{API}/Task/Delete?id=1"), ("POST", f"{API}/Task/GetAll"),
+    for m, u in [("GET", f"{API}/Task/GetAll?id=1"), ("POST", f"{API}/Task/GetAll"),
                  ("POST", f"{API}/Task/GetForEdit"), ("POST", f"{API}/DRViewer/PostData"),
                  ("POST", "https://x.vn/notify/negotiate"), ("POST", "https://x.vn/api/tasks/search")]:
         assert not is_write_request(m, u), (m, u)
-    # ghi dữ liệu -> chặn
-    for m, u in [("POST", f"{API}/Task/CreateOrUpdate"), ("POST", f"{API}/Task/Delete"),
+    # ghi dữ liệu -> chặn (kể cả GET xhr có từ ghi: nhiều hệ thống cũ ghi bằng GET)
+    for m, u in [("GET", f"{API}/Task/Delete?id=1"), ("POST", f"{API}/Task/CreateOrUpdate"), ("POST", f"{API}/Task/Delete"),
                  ("POST", "https://x.vn/api/tasks/complete?id=1"), ("POST", "https://x.vn/FileManager/UploadFile"),
                  ("PUT", "https://x.vn/api/tasks/1"), ("DELETE", "https://x.vn/api/tasks/1"),
                  ("POST", f"{API}/GiaoViec/PhanCong")]:

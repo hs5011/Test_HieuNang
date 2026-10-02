@@ -1,12 +1,13 @@
 // ============================================================================
 //  Script k6 được sinh tự động bởi PerfTool - {{ generated_at }}
 //  Dự án   : {{ project_name|oneline }}
-//  Kịch bản: {{ scenario_name }} | VUs: {{ vus }} | Thời lượng: {{ duration }}
+//  Kịch bản: {{ scenario_name }} | VUs: {{ vus }} | Thời lượng: {{ duration|oneline }}
 //  Chạy    : k6 run --out csv=raw.csv --summary-export=summary.json {{ file_name }}
 //  Tài khoản đọc từ biến môi trường PERF_USERNAME / PERF_PASSWORD
 // ============================================================================
 import http from 'k6/http';
 import { check, group, sleep } from 'k6';
+import { Counter } from 'k6/metrics';
 
 const AUTH_MODE = {{ auth_mode|tojson }};
 const USERNAME = __ENV.PERF_USERNAME || '';
@@ -28,9 +29,15 @@ const COOKIES = {{ cookies|tojson }};
 const LOGIN = {{ login|tojson }};
 const HTTP_TIMEOUT = '{{ http_timeout }}s';
 const LOGIN_PAGE_RE = /(login|dang-nhap|signin|sign-in|auth)/i;
+// request bị chuyển về trang đăng nhập (mất phiên): HTTP vẫn 200 nhưng KHÔNG phải kết quả nghiệp vụ.
+// PerfTool đọc metric này và tính các request đó là LỖI (tránh báo cáo "Đạt" khi đang đo trang đăng nhập).
+const SESSION_LOST = new Counter('perftool_session_lost');
 
 export const options = {
-  insecureSkipTLSVerify: true,
+  insecureSkipTLSVerify: {{ 'true' if insecure_tls else 'false' }},
+  // không giữ nội dung phản hồi trong RAM (soak nhiều giờ / phản hồi lớn làm máy bắn tải cạn bộ nhớ);
+  // bước cần đọc phản hồi (đăng nhập lấy token, trích token) tự bật responseType: 'text'
+  discardResponseBodies: true,
   noCookiesReset: true,   // giữ phiên đăng nhập (cookie) giữa các vòng lặp của cùng 1 VU
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
   scenarios: {
@@ -41,15 +48,17 @@ export const options = {
       stages: [{% for st in sc.stages %}{ duration: '{{ st.duration_s }}s', target: {{ st.target }} }{% if not loop.last %}, {% endif %}{% endfor %}],
       gracefulRampDown: '30s',
       exec: '{{ sc.fn }}',
-      tags: { uc: {{ sc.uc_code|tojson }} },
+      tags: { uc: {{ sc.uc_code|tojson }}, uc_key: '{{ sc.key }}' },
     },
 {%- endfor %}
   },
   thresholds: {
-    http_req_duration: ['p(95)<{{ p95_threshold }}'],
-    http_req_failed: ['rate<{{ error_rate_threshold }}'],
+    // chỉ tính request nghiệp vụ (bỏ LOGIN) – khớp cách PerfTool đánh giá ở bước 8
+    'http_req_duration{kind:step}': ['p(95)<{{ p95_threshold }}'],
+    'http_req_failed{kind:step}': ['rate<{{ error_rate_threshold }}'],
+    perftool_session_lost: ['count<1'],
 {%- for sc in scenarios %}
-    {{ ('http_req_duration{uc:' ~ sc.uc_code ~ '}')|tojson }}: ['p(95)<{{ sc.p95_threshold }}'],
+    'http_req_duration{kind:step,uc_key:{{ sc.key }}}': ['p(95)<{{ sc.p95_threshold }}'],
 {%- endfor %}
   },
 };
@@ -77,8 +86,9 @@ function ensureAuth(ucCode) {
       .split({% raw %}'{{PASSWORD}}'{% endraw %}).join(enc(pass));
     const res = http.request(LOGIN.method, LOGIN.url, body, {
       headers: LOGIN.content_type ? { 'Content-Type': LOGIN.content_type } : {},
-      tags: { name: ucCode + ' :: LOGIN' },
+      tags: { name: ucCode + ' :: LOGIN', kind: 'login' },
       timeout: HTTP_TIMEOUT,
+      responseType: 'text',
     });
     check(res, { 'đăng nhập thành công': (r) => r.status >= 200 && r.status < 400 });
     if (res.status >= 400) console.warn('Đăng nhập thất bại (HTTP ' + res.status + ') với tài khoản ' + user);
@@ -98,12 +108,15 @@ function call(ucCode, step, headers) {
   if (step.use && tokens[step.use]) h['Authorization'] = 'Bearer ' + tokens[step.use];
   const res = http.request(step.method, step.url, step.body ? step.body : null, {
     headers: h,
-    tags: { name: ucCode + ' :: ' + step.name },
+    tags: { name: ucCode + ' :: ' + step.name, kind: 'step' },
     timeout: HTTP_TIMEOUT,
+    responseType: step.extract ? 'text' : 'none',
   });
+  const lost = LOGIN_PAGE_RE.test(res.url || '') && !LOGIN_PAGE_RE.test(step.url);
+  if (lost) SESSION_LOST.add(1, { name: ucCode + ' :: ' + step.name });
   check(res, {
     [step.name + ' - status 2xx/3xx']: (r) => r.status >= 200 && r.status < 400,
-    [step.name + ' - không bị chuyển về trang đăng nhập']: (r) => !LOGIN_PAGE_RE.test(r.url) || LOGIN_PAGE_RE.test(step.url),
+    [step.name + ' - không bị chuyển về trang đăng nhập']: () => !lost,
   });
   if (step.extract) {
     try {

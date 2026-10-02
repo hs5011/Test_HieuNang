@@ -13,7 +13,7 @@ from ... import config, jobs, storage
 from ...models import Project, RunInfo
 from ...runner.executor import load_run_file, plan_runs, save_run_file
 from ...scriptgen.profile import (SCENARIO_TYPES, fmt_duration, parse_duration, scenario_name, stages_for,
-                                  total_seconds)
+                                  total_seconds, valid_duration)
 from .. import state
 from ..components import job_panel, section_titles
 
@@ -228,8 +228,8 @@ theo thời gian, tính từ các ô: VUs = **{n}**, Ramp-up = **{up}**, Giữ t
     st.info("Mức mục tiêu (số VU) do người dùng đặt – nên lấy từ yêu cầu/cam kết của dự án, số liệu vận hành giờ cao "
             "điểm, hoặc ước tính: tổng tài khoản × % online × % đang thao tác. Các bậc Stress (50/100/125/150%) là quy "
             "ước cố định của ứng dụng.")
-    st.warning("JMeter dùng Thread Group chuẩn (chỉ ramp-up rồi giữ tải), nên Stress Test / Spike Test chỉ thể hiện "
-               "đầy đủ hình dạng tải ở k6.")
+    st.caption("JMeter chạy cùng hồ sơ tải với k6: mỗi bậc tăng tải là 1 Thread Group có độ trễ khởi động (không cần "
+               "plugin). Khác biệt duy nhất: JMeter giảm tải tức thời ở đầu giai đoạn ramp-down, k6 giảm dần.")
     st.markdown("""
 #### Smoke Test lỗi nhưng Load Test / Stress Test lại không lỗi?
 **Không được bỏ qua** – Smoke Test lỗi là tín hiệu cần giải thích trước khi tin kết quả của các kịch bản sau.
@@ -351,11 +351,14 @@ def render(p: Project) -> None:
                             if m == "single" else f"Chia đều {n_pool} tài khoản cho các VU (khai báo ở bước 1)")
         st.caption(SCENARIO_TYPES[stype])
         if st.form_submit_button("💾 Lưu cấu hình"):
-            bad = [n for n, v in (("Ramp-up", ramp), ("Thời lượng", dur), ("Ramp-down", rdown))
-                   if parse_duration(v) == 0 and v.strip() not in ("0", "0s")]
+            # thời lượng giữ tải phải > 0 (k6 báo lỗi "duration must be > 0"); ramp-up/ramp-down được phép = 0
+            bad = [n for n, v, z in (("Ramp-up", ramp, True), ("Thời lượng", dur, False), ("Ramp-down", rdown, True))
+                   if not valid_duration(v, allow_zero=z)]
             if bad:
-                st.error(f"Định dạng thời gian không hợp lệ: {', '.join(bad)}")
+                st.error(f"Định dạng thời gian không hợp lệ: {', '.join(bad)} – dùng số + đơn vị h/m/s/ms "
+                         "(vd 30s, 5m, 1h30m, 2m30s); thời lượng giữ tải phải lớn hơn 0.")
             else:
+                ramp, dur, rdown = ramp.strip(), dur.strip(), rdown.strip()
                 cfg.scenario_type, cfg.vus, cfg.ramp_up, cfg.duration, cfg.ramp_down = stype, int(vus), ramp, dur, rdown
                 cfg.think_time_s, cfg.p95_threshold_ms, cfg.error_rate_threshold = think, float(p95), err / 100
                 cfg.auth_mode, cfg.run_mode, cfg.http_timeout_s = auth, mode, int(timeout)
@@ -372,7 +375,7 @@ def render(p: Project) -> None:
 
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.caption("Hồ sơ tải (k6 – JMeter dùng ramp-up + giữ tải của Thread Group chuẩn)")
+        st.caption("Hồ sơ tải (k6 và JMeter cùng hồ sơ; JMeter giảm tải tức thời ở ramp-down)")
         st.area_chart(_profile_df(p), height=180, color="#D9822B")
     n_runs = len(cfg.tools) * (len(p.scenarios) if cfg.run_mode == "sequential" else 1)
     est = total_seconds(cfg) * n_runs
@@ -433,6 +436,10 @@ def render(p: Project) -> None:
                     f.write_text(new_txt, encoding="utf-8")
                     st.success("Đã lưu.")
                 d2.download_button("⬇ Tải về", txt, file_name=f.name, key=f"dl_{r.run_id}")
+                if (r.config or {}).get("auth_mode") == "static_headers":
+                    st.warning("Script này chứa **cookie/token phiên đăng nhập thật** (chế độ dùng cookie/token đã ghi "
+                               "nhận): ai có file đều dùng được phiên của tài khoản cho tới khi phiên hết hạn – không "
+                               "gửi file qua email/chat; xoá sau khi dùng.")
                 st.caption(f"`{f}`")
 
     # ---------------------------------------------------------------- theo dõi

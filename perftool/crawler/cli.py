@@ -17,8 +17,8 @@ import sys
 import traceback
 from datetime import datetime
 
-from .. import jobs
-from ..storage import load_project, sub_dir
+from .. import config, jobs
+from ..storage import SESSION_FIELDS, load_project, sub_dir
 from .interactions import join_url
 from .web_crawler import WebCrawler, dump
 
@@ -51,11 +51,13 @@ def main() -> int:
             if a.mode != "record":
                 # luôn bật bộ chặn ghi khi crawler tự điều hướng (kể cả khi chỉ mở rộng menu / tải trang):
                 # trang tự gửi request ghi (vd đánh dấu đã xem) cũng bị huỷ; khi bấm thử tương tác tự chuyển mức "strict"
-                c.enable_write_guard("keyword")
+                # mức mặc định "strict": POST lúc tải trang mà không mang tên truy vấn (vd /api/log/visit, /api/hoso/view –
+                # ghi nhận lượt xem) cũng bị huỷ; đổi bằng crawler.page_load_guard trong settings.yaml
+                c.enable_write_guard(str(config.get("crawler.page_load_guard", "strict")))
             if a.mode == "discover":
                 mods = c.discover_modules()
                 dump(work / "discover.json", {"home": c.page.url, "modules": mods,
-                                              "auth": c.auth.model_dump()})
+                                              "auth": c.auth.model_dump(exclude=SESSION_FIELDS)})
                 log(f"Hoàn tất phát hiện {len(mods)} phân hệ.")
             elif a.mode == "record":
                 from .manual import ManualRecorder
@@ -68,7 +70,7 @@ def main() -> int:
                         "đầu bảng; không bấm nút trong popup, không bấm mục nguy hiểm (Xoá, Duyệt, Hoàn thành…); "
                         "trong lúc bấm thử, bộ chặn ghi chỉ cho qua request truy vấn (GetAll/Search…).")
                 shots = sub_dir(a.project, "crawl/screens")
-                result = {"auth": c.auth.model_dump(), "modules": [], "partial": True}
+                result = {"auth": c.auth.model_dump(exclude=SESSION_FIELDS), "modules": [], "partial": True}
                 (work / "analysis.json").unlink(missing_ok=True)   # lần quét này bị dừng sớm -> không gộp lại kết quả cũ
                 enabled = [m for m in project.modules if m.enabled]
                 # Thêm các URL gợi ý từ file UC (nếu có)
@@ -88,7 +90,7 @@ def main() -> int:
                         links.insert(0, {"href": m.url, "text": m.name})
                     pages = c.analyze_module(m.name, links, shots)
                     result["modules"].append({"name": m.name, "url": m.url, "pages": [p.model_dump() for p in pages]})
-                    result["auth"] = c.auth.model_dump()
+                    result["auth"] = c.auth.model_dump(exclude=SESSION_FIELDS)
                     dump(work / "analysis.json", result)       # lưu dần: bấm Dừng vẫn giữ các phân hệ đã quét xong
                 if hints:
                     jobs.write_status(a.project, job, progress=f"{total_steps}/{total_steps} · URL gợi ý")
@@ -97,12 +99,13 @@ def main() -> int:
                     pages = c.analyze_module("URL gợi ý từ UC", hints, shots, max_pages=len(hints))
                     result["modules"].append({"name": "URL gợi ý từ UC", "url": hints[0]["href"],
                                               "pages": [p.model_dump() for p in pages]})
-                result["auth"] = c.auth.model_dump()
+                result["auth"] = c.auth.model_dump(exclude=SESSION_FIELDS)
                 result["partial"] = False
                 dump(work / "analysis.json", result)
                 total = sum(len(m["pages"]) for m in result["modules"])
                 log(f"Hoàn tất phân tích {len(result['modules'])} phân hệ, {total} màn hình."
                     + (f" Bộ chặn ghi đã huỷ {c.guard.count} request ghi dữ liệu." if c.guard and c.guard.count else ""))
+            c.save_session()        # Authorization bắt được trong lúc quét -> crawl/auth.json (không vào file kết quả)
         jobs.write_status(a.project, job, status="done", finished=_now(), message="Hoàn tất")
         return 0
     except Exception as e:  # noqa: BLE001

@@ -406,6 +406,20 @@ def build_report(project: Project, rows: list[dict], charts: dict[str, dict[str,
 SCENARIO_ORDER = ["smoke", "load", "stress", "spike", "soak"]
 
 
+def _duration_text(typ: str, c: dict) -> str:
+    """Thời lượng đúng theo hồ sơ tải: Stress/Spike chạy theo bậc nên tổng thời gian khác ramp + giữ + giảm."""
+    if typ == "smoke":
+        return str(c.get("duration"))
+    if typ in ("stress", "spike"):
+        try:
+            from ..models import TestConfig
+            from ..scriptgen.profile import fmt_duration, total_seconds
+            return f"{fmt_duration(total_seconds(TestConfig.model_validate(c)))} (theo bậc)"
+        except Exception:  # noqa: BLE001
+            pass
+    return f"{c.get('ramp_up')} + {c.get('duration')} + {c.get('ramp_down')}"
+
+
 def _overview_section(rb: ReportBuilder, rows: list[dict], ch: dict[str, str], num: str) -> None:
     """Mục tổng quan: bảng theo loại kịch bản × công cụ, biểu đồ tổng quát và nhận xét so sánh."""
     rb.heading(f"{num}\tTỔNG QUAN CÁC KỊCH BẢN KIỂM THỬ", 2)
@@ -416,8 +430,7 @@ def _overview_section(rb: ReportBuilder, rows: list[dict], ch: dict[str, str], n
     trows = []
     for i, ((typ, tool), g) in enumerate(groups.items(), 1):
         c = g[0]["config"]
-        dur = (str(c.get("duration")) if typ == "smoke"
-               else f"{c.get('ramp_up')} + {c.get('duration')} + {c.get('ramp_down')}")
+        dur = _duration_text(typ, c)
         n = sum(r["summary"].get("samples", 0) for r in g)
         errs = sum(r["summary"].get("errors", 0) for r in g)
         p95s = [r["summary"].get("p95") or 0 for r in g]
